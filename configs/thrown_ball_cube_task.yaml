@@ -5,8 +5,8 @@ reference_task: front110 falling/catching rod-like tool task, especially v699/v7
 paper_reference:
   arxiv: 2409.10319
   title: Catch It! Learning to Catch in Flight with Mobile Dexterous Hands
-active_output_root: /root/autodl-tmp/mingyu/video2sim/franka_revo2_thrown_ball_cube_catch
-compressed_archive_root: /autodl-fs/data/mingyu/video2sim/franka_revo2_thrown_ball_cube_catch
+active_output_root: /root/autodl-tmp/mingyu/Mujoco/outputs/franka_revo2_thrown_ball_cube_catch
+compressed_archive_root: /autodl-fs/data/mingyu/Mujoco/archives/franka_revo2_thrown_ball_cube_catch
 fs_policy: store source, manifests, compressed archives only; do not place large raw frame/video batches on fs
 tmp_policy: active raw frames/videos/datasets during generation
 objects:
