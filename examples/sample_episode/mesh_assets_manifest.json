@@ -1,0 +1,109 @@
+{
+  "schema": "video2sim_mesh_assets_manifest_v2",
+  "objects": [
+    {
+      "name": "incoming_object",
+      "category": "sphere",
+      "asset_source": "mujoco_primitive_exported_as_visual_and_collision_mesh",
+      "visual_mesh": "meshes/incoming_object/incoming_object_visual.obj",
+      "collision_mesh": "meshes/incoming_object/incoming_object_collision.obj",
+      "mesh_pose": [
+        0.362532377243042,
+        -0.9319389462471008,
+        0.8434942364692688,
+        0.9999755024909973,
+        0.0039912378415465355,
+        0.003854119684547186,
+        0.004270380362868309
+      ],
+      "asset_local_coordinate_frame": {
+        "origin_xyz": [
+          0,
+          0,
+          0
+        ],
+        "axes": "x-right y-forward z-up"
+      },
+      "vae_encodings": {
+        "point_cloud": "meshes/incoming_object/incoming_object_vae_point_cloud.npz",
+        "voxel": "meshes/incoming_object/incoming_object_vae_voxel.npz",
+        "implicit_field": "meshes/incoming_object/incoming_object_vae_implicit_field.npz"
+      }
+    }
+  ],
+  "robots": [
+    {
+      "name": "franka_fr3_revo2_right_robot",
+      "category": "articulated_robot",
+      "asset_source": "full_robot_urdf_mirror_aligned_visual_assets",
+      "asset_local_coordinate_frame": {
+        "origin_xyz": [
+          0,
+          0,
+          0
+        ],
+        "axes": "MuJoCo asset local frame per link"
+      },
+      "visual_meshes": [
+        "meshes/franka_revo2_robot/franka_brainco_revo2_right_aligned_visual_mjcf_v728.xml",
+        "meshes/franka_revo2_robot/link0_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/link1_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/link2_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/link3_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/link4_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/link5_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/link6_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/link7_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/right_base_link.STL",
+        "meshes/franka_revo2_robot/right_thumb_metacarpal_link.STL",
+        "meshes/franka_revo2_robot/right_thumb_proximal_link.STL",
+        "meshes/franka_revo2_robot/right_thumb_distal_link.STL",
+        "meshes/franka_revo2_robot/right_thumb_touch_link.STL",
+        "meshes/franka_revo2_robot/right_index_proximal_link.STL",
+        "meshes/franka_revo2_robot/right_index_distal_link.STL",
+        "meshes/franka_revo2_robot/right_index_touch_link.STL",
+        "meshes/franka_revo2_robot/right_middle_proximal_link.STL",
+        "meshes/franka_revo2_robot/right_middle_distal_link.STL",
+        "meshes/franka_revo2_robot/right_middle_touch_link.STL",
+        "meshes/franka_revo2_robot/right_ring_proximal_link.STL",
+        "meshes/franka_revo2_robot/right_ring_distal_link.STL",
+        "meshes/franka_revo2_robot/right_ring_touch_link.STL",
+        "meshes/franka_revo2_robot/right_pinky_proximal_link.STL",
+        "meshes/franka_revo2_robot/right_pinky_distal_link.STL",
+        "meshes/franka_revo2_robot/right_pinky_touch_link.STL"
+      ],
+      "collision_meshes": [
+        "meshes/franka_revo2_robot/franka_brainco_revo2_right_aligned_visual_mjcf_v728.xml",
+        "meshes/franka_revo2_robot/link0_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/link1_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/link2_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/link3_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/link4_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/link5_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/link6_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/link7_visual_aligned_v728.stl",
+        "meshes/franka_revo2_robot/right_base_link.STL",
+        "meshes/franka_revo2_robot/right_thumb_metacarpal_link.STL",
+        "meshes/franka_revo2_robot/right_thumb_proximal_link.STL",
+        "meshes/franka_revo2_robot/right_thumb_distal_link.STL",
+        "meshes/franka_revo2_robot/right_thumb_touch_link.STL",
+        "meshes/franka_revo2_robot/right_index_proximal_link.STL",
+        "meshes/franka_revo2_robot/right_index_distal_link.STL",
+        "meshes/franka_revo2_robot/right_index_touch_link.STL",
+        "meshes/franka_revo2_robot/right_middle_proximal_link.STL",
+        "meshes/franka_revo2_robot/right_middle_distal_link.STL",
+        "meshes/franka_revo2_robot/right_middle_touch_link.STL",
+        "meshes/franka_revo2_robot/right_ring_proximal_link.STL",
+        "meshes/franka_revo2_robot/right_ring_distal_link.STL",
+        "meshes/franka_revo2_robot/right_ring_touch_link.STL",
+        "meshes/franka_revo2_robot/right_pinky_proximal_link.STL",
+        "meshes/franka_revo2_robot/right_pinky_distal_link.STL",
+        "meshes/franka_revo2_robot/right_pinky_touch_link.STL"
+      ],
+      "mesh_pose": "per-link poses stored in robot_body_pos_w and robot_body_quat_wxyz",
+      "vae_encodings": {
+        "note": "robot link meshes are stored as original professional STL/XML assets; per-link VAE matrices are not duplicated to avoid huge repeated archives"
+      }
+    }
+  ]
+}

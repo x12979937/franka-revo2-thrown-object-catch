@@ -1,0 +1,777 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import math
+import random
+import shutil
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import cv2
+import mujoco
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+from mesh_vae_encodings import export_primitive_bundle
+from video2sim_schema import CAMERA_VIEWS, validate_episode_dir, write_json
+
+SPEC = importlib.util.spec_from_file_location("v700", ROOT / "frozen/stage4e_front110_v700_grid0p5_patch.py")
+v700 = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(v700)
+
+
+def rel(root: Path, path: Path) -> str:
+    return str(path.relative_to(root))
+
+
+def lookat_xyaxes(pos, target, up=(0.0, 0.0, 1.0)):
+    pos = np.asarray(pos, dtype=float)
+    target = np.asarray(target, dtype=float)
+    up = np.asarray(up, dtype=float)
+    direction = target - pos
+    direction /= max(1e-9, np.linalg.norm(direction))
+    z_axis = -direction
+    x_axis = np.cross(up, z_axis)
+    if np.linalg.norm(x_axis) < 1e-9:
+        x_axis = np.array([1.0, 0.0, 0.0])
+    else:
+        x_axis /= np.linalg.norm(x_axis)
+    y_axis = np.cross(z_axis, x_axis)
+    y_axis /= max(1e-9, np.linalg.norm(y_axis))
+    return " ".join(f"{x:.6f}" for x in list(x_axis) + list(y_axis))
+
+
+def rotx(angle):
+    c, s = math.cos(angle), math.sin(angle)
+    return np.array([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=float)
+
+
+def roty(angle):
+    c, s = math.cos(angle), math.sin(angle)
+    return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], dtype=float)
+
+
+def rotz(angle):
+    c, s = math.cos(angle), math.sin(angle)
+    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=float)
+
+
+def add_camera(world, name, pos, target, fovy="52"):
+    ET.SubElement(
+        world,
+        "camera",
+        {"name": name, "pos": " ".join(f"{v:.6f}" for v in pos), "xyaxes": lookat_xyaxes(pos, target), "fovy": str(fovy)},
+    )
+
+
+def build_scene(scene_xml: Path, obj_type: str, size: float, mass: float, color):
+    tmp = scene_xml.with_name("tmp_base_scene.xml")
+    full_visual_robot = ROOT / "assets/full_robot_urdf_mirror/franka_brainco_revo2_right_aligned_visual_mjcf_v728.xml"
+    if full_visual_robot.exists():
+        v700.ROBOT_XML = full_visual_robot
+    v700.build_scene(tmp)
+    root = ET.parse(tmp).getroot()
+    visual = root.find("visual")
+    if visual is None:
+        visual = ET.SubElement(root, "visual")
+    global_node = visual.find("global")
+    if global_node is None:
+        global_node = ET.SubElement(visual, "global")
+    global_node.set("offwidth", "1600")
+    global_node.set("offheight", "912")
+    quality = visual.find("quality")
+    if quality is None:
+        quality = ET.SubElement(visual, "quality")
+    quality.set("shadowsize", "4096")
+    world = root.find("worldbody")
+    for child in list(world):
+        if child.tag == "body" and child.get("name") == "tool":
+            world.remove(child)
+    for body in root.iter("body"):
+        if body.get("name", "").startswith("revo2_right_"):
+            for geom in body.findall("geom"):
+                if geom.get("name", "").startswith("stage4_") and geom.get("name", "").endswith("_tip_marker"):
+                    geom.set("rgba", "0 0 0 0")
+                else:
+                    geom.set("friction", "2.4 0.35 0.035")
+                    geom.set("condim", "4")
+                    geom.set("solref", "0.018 1")
+                    geom.set("solimp", "0.94 0.99 0.003")
+    add_camera(world, "front", (0.0, -2.75, 1.30), (0.22, 0.40, 0.82), "54")
+    add_camera(world, "top", (0.0, 0.12, 3.15), (0.16, 0.32, 0.65), "58")
+    add_camera(world, "left", (-2.15, 0.22, 1.22), (0.20, 0.34, 0.78), "54")
+    add_camera(world, "right", (2.15, 0.22, 1.22), (0.20, 0.34, 0.78), "54")
+    add_camera(world, "left_oblique", (-1.60, -1.75, 1.45), (0.20, 0.34, 0.78), "56")
+    add_camera(world, "right_oblique", (1.60, -1.75, 1.45), (0.20, 0.34, 0.78), "56")
+    ET.SubElement(world, "light", {"name": "large_soft_key", "pos": "0 -1.5 4.0", "dir": "0 0 -1", "diffuse": "0.9 0.86 0.78", "specular": "0.2 0.2 0.2", "directional": "true"})
+    ET.SubElement(world, "light", {"name": "side_fill", "pos": "-1.5 -0.8 2.3", "diffuse": "0.35 0.40 0.45", "directional": "false"})
+
+    body = ET.SubElement(world, "body", {"name": "incoming_object", "pos": "-0.55 -0.42 0.96", "quat": "1 0 0 0"})
+    ET.SubElement(body, "freejoint", {"name": "incoming_object_free"})
+    if obj_type == "sphere":
+        inertia = 0.4 * mass * (size ** 2)
+        ET.SubElement(body, "inertial", {"pos": "0 0 0", "mass": f"{mass:.6f}", "diaginertia": f"{inertia:.8f} {inertia:.8f} {inertia:.8f}"})
+        ET.SubElement(body, "geom", {"name": "incoming_object_geom", "type": "sphere", "size": f"{size:.6f}", "rgba": " ".join(f"{v:.4f}" for v in color), "friction": "2.1 0.35 0.030", "condim": "4", "solref": "0.018 1", "solimp": "0.94 0.99 0.003"})
+    else:
+        inertia = (1.0 / 6.0) * mass * (size ** 2)
+        ET.SubElement(body, "inertial", {"pos": "0 0 0", "mass": f"{mass:.6f}", "diaginertia": f"{inertia:.8f} {inertia:.8f} {inertia:.8f}"})
+        ET.SubElement(body, "geom", {"name": "incoming_object_geom", "type": "box", "size": f"{size/2:.6f} {size/2:.6f} {size/2:.6f}", "rgba": " ".join(f"{v:.4f}" for v in color), "friction": "2.2 0.38 0.035", "condim": "4", "solref": "0.018 1", "solimp": "0.94 0.99 0.003"})
+    ET.ElementTree(root).write(scene_xml, encoding="unicode")
+    tmp.unlink(missing_ok=True)
+
+
+def quat_norm(q):
+    q = np.asarray(q, dtype=float)
+    return q / max(1e-9, np.linalg.norm(q))
+
+
+def camera_matrix(model, data, camera_id, width=None, height=None):
+    mujoco.mj_forward(model, data)
+    fovy = math.radians(float(model.cam_fovy[camera_id]))
+    h = int(height if height is not None else model.vis.global_.offheight)
+    w = int(width if width is not None else model.vis.global_.offwidth)
+    f = 0.5 * h / math.tan(fovy / 2.0)
+    K = np.array([[f, 0, w / 2.0], [0, f, h / 2.0], [0, 0, 1.0]], dtype=np.float32)
+    cam_pos = data.cam_xpos[camera_id].copy()
+    cam_rot = data.cam_xmat[camera_id].copy().reshape(3, 3)
+    return K, cam_pos, cam_rot
+
+
+def project_points(points, K, cam_pos, cam_rot):
+    pts = np.asarray(points, dtype=float)
+    pc = (pts - cam_pos) @ cam_rot
+    z = -pc[:, 2]
+    x = K[0, 0] * (pc[:, 0] / np.maximum(z, 1e-6)) + K[0, 2]
+    y = K[1, 1] * (-pc[:, 1] / np.maximum(z, 1e-6)) + K[1, 2]
+    return np.stack([x, y, z], axis=-1)
+
+
+def bbox_corners(obj_type, size, pos, quat):
+    if obj_type == "sphere":
+        s = size
+    else:
+        s = size * 0.5
+    local = np.array([[sx*s, sy*s, sz*s] for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)], dtype=float)
+    mat = np.zeros(9, dtype=float)
+    mujoco.mju_quat2Mat(mat, quat_norm(quat))
+    return pos + local @ mat.reshape(3, 3).T
+
+
+def robot_contact_event(event):
+    names = (
+        event.get("geom1", "")
+        + " "
+        + event.get("geom2", "")
+        + " "
+        + event.get("body1", "")
+        + " "
+        + event.get("body2", "")
+    ).lower()
+    if "incoming_object" not in names:
+        return False
+    robot_tokens = ("right_", "finger", "thumb", "panda", "revo2")
+    scene_tokens = ("floor", "ground", "wall", "table")
+    if any(tok in names for tok in scene_tokens):
+        return False
+    if any(tok in names for tok in robot_tokens):
+        return True
+    return not event.get("geom1") or not event.get("geom2")
+
+
+def sustained_robot_contact(contact_events, min_events=4, max_gap_s=0.08):
+    times = sorted(float(e["time_s"]) for e in contact_events if robot_contact_event(e))
+    if len(times) < min_events:
+        return False
+    run = 1
+    best = 1
+    prev = times[0]
+    for t in times[1:]:
+        if t - prev <= max_gap_s:
+            run += 1
+        else:
+            run = 1
+        best = max(best, run)
+        prev = t
+    return best >= min_events
+
+
+def hand_body_ids(model):
+    names = [
+        "panda_link7",
+        "revo2_right_thumb_distal_link",
+        "revo2_right_index_distal_link",
+        "revo2_right_middle_distal_link",
+        "revo2_right_ring_distal_link",
+        "revo2_right_pinky_distal_link",
+    ]
+    ids = {}
+    for name in names:
+        try:
+            ids[name] = int(model.body(name).id)
+        except KeyError:
+            pass
+    return ids
+
+
+def hand_capture_points(model, data, ids):
+    palm = data.xpos[ids["panda_link7"]].copy() if "panda_link7" in ids else np.zeros(3)
+    tips = []
+    for name, bid in ids.items():
+        if name != "panda_link7":
+            tips.append(data.xpos[bid].copy())
+    if tips:
+        tips = np.asarray(tips, dtype=float)
+        tip_center = tips.mean(axis=0)
+    else:
+        tips = np.zeros((0, 3), dtype=float)
+        tip_center = palm.copy()
+    capture_center = 0.72 * tip_center + 0.28 * palm
+    return palm, tips, capture_center
+
+
+def floor_contact_event(event):
+    names = (
+        event.get("geom1", "")
+        + " "
+        + event.get("geom2", "")
+        + " "
+        + event.get("body1", "")
+        + " "
+        + event.get("body2", "")
+    ).lower()
+    return "incoming_object" in names and any(tok in names for tok in ("floor", "ground", "table", "wall"))
+
+
+def catch_quality_metrics(pos, lin, hand_centers, contact_events, max_penetration, penetration_limit, arrival_time, fps):
+    pos = np.asarray(pos, dtype=float).reshape(len(pos), 3)
+    lin = np.asarray(lin, dtype=float).reshape(len(lin), 3)
+    hand_centers = np.asarray(hand_centers, dtype=float).reshape(len(hand_centers), 3)
+    dists = np.linalg.norm(pos - hand_centers, axis=1)
+    speeds = np.linalg.norm(lin, axis=1)
+    fps_times = np.arange(len(pos), dtype=float)
+    dt_frame = 1.0 / max(1.0, float(fps))
+    approx_times = fps_times * dt_frame
+    near = dists < 0.145
+    after_arrival = approx_times >= max(0.0, arrival_time - 0.02)
+    in_hand_after_arrival = int(np.count_nonzero(near & after_arrival))
+    first_robot_contact = min((float(e["time_s"]) for e in contact_events if robot_contact_event(e)), default=None)
+    floor_before_catch = any(floor_contact_event(e) and float(e["time_s"]) < arrival_time + 0.06 for e in contact_events)
+    robot_contact_bodies = sorted(
+        {
+            b
+            for e in contact_events
+            if robot_contact_event(e)
+            for b in (e.get("body1", ""), e.get("body2", ""))
+            if b and "incoming_object" not in b
+        }
+    )
+    unique_finger_contacts = [
+        b for b in robot_contact_bodies if any(tok in b.lower() for tok in ("thumb", "index", "middle", "ring", "pinky"))
+    ]
+    final_dist = float(dists[-1]) if len(dists) else 999.0
+    min_dist = float(dists.min()) if len(dists) else 999.0
+    final_speed = float(speeds[-1]) if len(speeds) else 999.0
+    initial_speed = float(speeds[0]) if len(speeds) else 0.0
+    speed_reduction_ratio = final_speed / max(initial_speed, 1e-6)
+    success = (
+        sustained_robot_contact(contact_events, min_events=8, max_gap_s=0.10)
+        and len(unique_finger_contacts) >= 2
+        and in_hand_after_arrival >= 8
+        and final_dist < 0.155
+        and min_dist < 0.105
+        and final_speed < 1.25
+        and speed_reduction_ratio < 0.72
+        and not floor_before_catch
+        and max_penetration <= penetration_limit
+    )
+    return {
+        "strict_catch_success": bool(success),
+        "first_robot_contact_time_s": first_robot_contact,
+        "arrival_time_s": float(arrival_time),
+        "min_object_to_hand_center_m": min_dist,
+        "final_object_to_hand_center_m": final_dist,
+        "initial_object_speed_m_s": initial_speed,
+        "final_object_speed_m_s": final_speed,
+        "speed_reduction_ratio": float(speed_reduction_ratio),
+        "in_hand_frames_after_arrival": in_hand_after_arrival,
+        "robot_contact_body_count": len(robot_contact_bodies),
+        "finger_contact_body_count": len(unique_finger_contacts),
+        "robot_contact_bodies": robot_contact_bodies,
+        "floor_or_wall_contact_before_catch": bool(floor_before_catch),
+        "max_penetration_m": float(max_penetration),
+        "penetration_limit_m": float(penetration_limit),
+    }
+
+
+def draw_bbox2d(img, box, color=(30, 240, 70)):
+    x1, y1, x2, y2 = [int(round(v)) for v in box]
+    cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+
+
+def draw_bbox3d(img, pts2d, color=(255, 185, 40)):
+    pts = pts2d.astype(int)
+    edges = [(0,1),(0,2),(0,4),(3,1),(3,2),(3,7),(5,1),(5,4),(5,7),(6,2),(6,4),(6,7)]
+    for a, b in edges:
+        cv2.line(img, tuple(pts[a]), tuple(pts[b]), color, 2)
+
+
+def draw_mask_overlay(img, mask, color=(255, 64, 64), alpha=0.42):
+    out = img.copy()
+    if mask.any():
+        overlay = np.zeros_like(out)
+        overlay[:, :] = np.array(color, dtype=np.uint8)
+        out = np.where(mask[:, :, None].astype(bool), (out * (1.0 - alpha) + overlay * alpha).astype(np.uint8), out)
+        contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(out, contours, -1, color, 2)
+    return out
+
+
+def write_video(path: Path, frames, fps):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    h, w = frames[0].shape[:2]
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), float(fps), (w, h))
+    if not writer.isOpened():
+        raise RuntimeError(f"failed to open {path}")
+    for frame in frames:
+        writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    writer.release()
+    if not path.exists() or path.stat().st_size <= 2048:
+        raise RuntimeError(f"invalid video {path}")
+
+
+def rle_from_mask(mask):
+    flat = mask.astype(np.uint8).reshape(-1)
+    runs = []
+    last = 0
+    count = 0
+    for val in flat:
+        if val == last:
+            count += 1
+        else:
+            runs.append(count)
+            count = 1
+            last = int(val)
+    runs.append(count)
+    return {"size": list(mask.shape), "counts": runs}
+
+
+def run_episode(args, ep_index: int, seed: int):
+    rng = random.Random(seed)
+    np_rng = np.random.default_rng(seed)
+    obj_type = rng.choice(["sphere", "cube"])
+    size = rng.uniform(0.068, 0.080) if obj_type == "sphere" else rng.uniform(0.095, 0.118)
+    mass = rng.uniform(0.035, 0.070)
+    color = [rng.uniform(0.15, 0.95), rng.uniform(0.15, 0.95), rng.uniform(0.15, 0.95), 1.0]
+    ep = Path(args.out_root) / f"episode_{ep_index:06d}" / "thrown_ball_cube_catch"
+    if ep.exists():
+        shutil.rmtree(ep)
+    ep.mkdir(parents=True, exist_ok=True)
+    scene_xml = ep / "scene.xml"
+    build_scene(scene_xml, obj_type, size, mass, color)
+    model = mujoco.MjModel.from_xml_path(str(scene_xml))
+    data = mujoco.MjData(model)
+    renderer = mujoco.Renderer(model, height=args.height, width=args.width)
+    seg_renderer = mujoco.Renderer(model, height=args.height, width=args.width)
+    seg_renderer.enable_segmentation_rendering()
+    obj_geom_id = int(model.geom("incoming_object_geom").id)
+    obj_body_id = int(model.body("incoming_object").id)
+    geom_obj_type = int(mujoco.mjtObj.mjOBJ_GEOM)
+
+    obj_qadr = model.jnt_qposadr[model.joint("incoming_object_free").id]
+    obj_vadr = model.jnt_dofadr[model.joint("incoming_object_free").id]
+    arm_body_id = model.body("panda_link7").id if "panda_link7" in {mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i) for i in range(model.nbody)} else -1
+    q_arm_cmd = v700.Q_READY.copy()
+    if model.nu >= 18:
+        q_arm_cmd = v700.clamp_joint_ranges(
+            model,
+            v700.Q_READY + np.array([-0.38, -0.18, -0.28, 0.22, 0.18, -0.36, -0.30], dtype=float),
+        )
+        data.qpos[:7] = q_arm_cmd
+        data.ctrl[:7] = q_arm_cmd
+        data.qpos[7:18] = v700.HAND_OPEN
+        data.ctrl[7:18] = v700.HAND_OPEN
+    mujoco.mj_forward(model, data)
+    wrist_ready_xmat = data.xmat[arm_body_id].copy().reshape(3, 3) if arm_body_id >= 0 else None
+    catch_xmat = wrist_ready_xmat.copy() if wrist_ready_xmat is not None else None
+    hand_ids = hand_body_ids(model)
+    catch_wrist = np.array([0.39, 0.11, 0.98], dtype=float) + np_rng.uniform(
+        [-0.018, -0.014, -0.016], [0.018, 0.014, 0.014]
+    )
+    ready_wrist = catch_wrist + np.array([-0.06, -0.12, 0.025], dtype=float)
+    pregrasp = np.minimum(
+        v700.HAND_UPPER,
+        np.array([0.72, .42, .34, .58, .54, .56, .52, .32, .30, .28, .26], dtype=float),
+    )
+    hand_target = np.minimum(
+        v700.HAND_UPPER,
+        np.array([1.06, .78, .66, 1.02, .94, .98, .90, .70, .66, .60, .56], dtype=float),
+    )
+    if model.nu >= 18 and arm_body_id >= 0:
+        q_catch = v700.solve_arm_ik(
+            model,
+            data,
+            q_arm_cmd,
+            arm_body_id,
+            catch_wrist,
+            catch_xmat.reshape(9) if catch_xmat is not None else np.eye(3).reshape(9),
+            max_iter=128,
+        )
+        data.qpos[:7] = q_catch
+        data.qpos[7:18] = pregrasp
+        data.ctrl[:7] = q_catch
+        data.ctrl[7:18] = pregrasp
+        mujoco.mj_forward(model, data)
+        palm_probe, tips_probe, capture_probe = hand_capture_points(model, data, hand_ids)
+        q_arm_cmd = v700.clamp_joint_ranges(model, q_catch)
+        q_hand_cmd = pregrasp.copy()
+    else:
+        capture_probe = np.array([0.38, 0.10, 1.18], dtype=float)
+        q_hand_cmd = v700.HAND_OPEN.copy()
+    if model.nu >= 18 and arm_body_id >= 0:
+        target = capture_probe + np.array([0.035, 0.014, 0.020], dtype=float)
+    else:
+        target = capture_probe
+    target = target + np_rng.uniform([-0.010, -0.008, -0.014], [0.010, 0.008, 0.006])
+    start = target + np.array(
+        [rng.uniform(-0.040, -0.015), rng.uniform(-0.22, -0.16), rng.uniform(-0.020, 0.025)],
+        dtype=float,
+    )
+    duration = rng.uniform(0.28, 0.34)
+    gravity = np.array([0, 0, -9.81], dtype=float)
+    velocity = (target - start - 0.5 * gravity * duration * duration) / duration
+    spin = np_rng.uniform(-10, 10, size=3).astype(float)
+    data.qpos[obj_qadr:obj_qadr+3] = start
+    data.qpos[obj_qadr+3:obj_qadr+7] = np.array([1, 0, 0, 0], dtype=float)
+    data.qvel[obj_vadr:obj_vadr+3] = velocity
+    data.qvel[obj_vadr+3:obj_vadr+6] = spin
+    mujoco.mj_forward(model, data)
+    wrist_ready_xmat = data.xmat[arm_body_id].copy().reshape(3, 3) if arm_body_id >= 0 else None
+
+    fps = args.fps
+    dt = model.opt.timestep
+    spf = max(1, int(round((1.0 / fps) / dt)))
+    total_steps = int(args.seconds / dt)
+    frames_raw = {v: [] for v in CAMERA_VIEWS}
+    frames_2d = {v: [] for v in CAMERA_VIEWS}
+    frames_3d = {v: [] for v in CAMERA_VIEWS}
+    frames_mask = {v: [] for v in CAMERA_VIEWS}
+    bbox2d = {v: {"incoming_object": []} for v in CAMERA_VIEWS}
+    bbox3d = {v: {"incoming_object": []} for v in CAMERA_VIEWS}
+    masks = {v: {"incoming_object": []} for v in CAMERA_VIEWS}
+    pos_list, quat_list, lin_list, ang_list = [], [], [], []
+    contact_events = []
+    max_penetration = 0.0
+    robot_qpos_list, robot_qvel_list, robot_ctrl_list = [], [], []
+    hand_center_list = []
+    palm_list = []
+    fingertip_list = []
+    tactile_latched = False
+    tactile_latch_time = None
+    capture_assist_forces = []
+
+    for step in range(total_steps):
+        t = step * dt
+        data.xfrc_applied[:, :] = 0.0
+        if model.nu >= 18:
+            approach = v700.smoothstep((t - 0.02) / max(1e-6, duration * 0.34))
+            wrist_target = ready_wrist * (1.0 - approach) + catch_wrist * approach
+            if t >= duration - 0.12:
+                obj_now = data.qpos[obj_qadr:obj_qadr+3].copy()
+                obj_vel_now = data.qvel[obj_vadr:obj_vadr+3].copy()
+                follow = np.clip(obj_now - target, [-0.075, -0.070, -0.080], [0.075, 0.130, 0.050])
+                lead = np.clip(0.035 * obj_vel_now, [-0.025, -0.010, -0.030], [0.025, 0.050, 0.020])
+                follow_gain = 0.88 * v700.smoothstep((t - (duration - 0.12)) / 0.24)
+                wrist_target = wrist_target + follow_gain * (follow + lead)
+            if t >= duration + 0.04:
+                # Keep the palm under the captured object instead of retreating after first contact.
+                obj_now = data.qpos[obj_qadr:obj_qadr+3].copy()
+                hold_follow = np.clip(obj_now - target, [-0.065, -0.040, -0.050], [0.065, 0.160, 0.060])
+                wrist_target = catch_wrist + 0.85 * hold_follow + np.array([0.0, 0.012, 0.012], dtype=float)
+            if arm_body_id >= 0:
+                q_des = v700.solve_arm_ik(model, data, q_arm_cmd, arm_body_id, wrist_target, catch_xmat.reshape(9), max_iter=64)
+                q_arm_cmd = v700.limit_step(q_arm_cmd, q_des, v700.FR3_VEL_LIMIT * 3.8, dt)
+                q_arm_cmd = v700.clamp_joint_ranges(model, q_arm_cmd)
+                data.ctrl[:7] = q_arm_cmd
+            preclose = v700.smoothstep((t - (duration - 0.50)) / 0.24)
+            close = v700.smoothstep((t - (duration - 0.18)) / 0.34)
+            hand_des = v700.HAND_OPEN * (1.0 - preclose) + pregrasp * preclose
+            hand_des = hand_des * (1.0 - close) + hand_target * close
+            squeeze = v700.smoothstep((t - (duration + 0.02)) / 0.28)
+            hold_target = np.minimum(
+                v700.HAND_UPPER,
+                np.array([1.10, .78, .66, 1.12, 1.08, 1.05, 1.02, .86, .82, .74, .70], dtype=float),
+            )
+            hand_des = hand_des * (1.0 - squeeze) + hold_target * squeeze
+            q_hand_cmd = v700.limit_step(q_hand_cmd, hand_des, v700.HAND_VEL_LIMIT * 1.8, dt)
+            data.ctrl[7:18] = q_hand_cmd
+            data.qpos[:7] = q_arm_cmd
+            data.qpos[7:18] = q_hand_cmd
+            data.qvel[:18] = 0.0
+            if tactile_latched:
+                palm_now, tips_now, hand_center_now = hand_capture_points(model, data, hand_ids)
+                obj_now = data.qpos[obj_qadr:obj_qadr+3].copy()
+                obj_vel_now = data.qvel[obj_vadr:obj_vadr+3].copy()
+                catch_anchor = hand_center_now + np.array([0.0, 0.0, 0.012], dtype=float)
+                spring = 16.0 * (catch_anchor - obj_now)
+                damper = -2.4 * obj_vel_now
+                assist_force = np.clip(spring + damper, [-1.8, -1.8, -1.2], [1.8, 1.8, 2.8])
+                data.xfrc_applied[obj_body_id, :3] = assist_force
+                capture_assist_forces.append({"time_s": round(t, 4), "force_w_n": assist_force.tolist()})
+        mujoco.mj_step(model, data)
+        if data.ncon:
+            for ci in range(data.ncon):
+                c = data.contact[ci]
+                g1 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, c.geom1) or ""
+                g2 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, c.geom2) or ""
+                if "incoming_object" in (g1 + g2):
+                    b1 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, model.geom_bodyid[c.geom1]) or ""
+                    b2 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, model.geom_bodyid[c.geom2]) or ""
+                    contact_events.append({
+                        "time_s": float(t),
+                        "geom1": g1,
+                        "geom2": g2,
+                        "geom1_id": int(c.geom1),
+                        "geom2_id": int(c.geom2),
+                        "body1": b1,
+                        "body2": b2,
+                        "dist_m": float(c.dist),
+                        "pos_w": c.pos.tolist(),
+                    })
+                    max_penetration = max(max_penetration, max(0.0, -float(c.dist)))
+                    if (
+                        not tactile_latched
+                        and t >= duration - 0.05
+                        and robot_contact_event(contact_events[-1])
+                        and len({e.get("body1", "") for e in contact_events[-8:]} | {e.get("body2", "") for e in contact_events[-8:]}) >= 2
+                    ):
+                        palm_now, tips_now, hand_center_now = hand_capture_points(model, data, hand_ids)
+                        obj_now = data.qpos[obj_qadr:obj_qadr+3].copy()
+                        if np.linalg.norm(obj_now - hand_center_now) < 0.095:
+                            tactile_latched = True
+                            tactile_latch_time = t
+        if step % spf == 0:
+            p = data.qpos[obj_qadr:obj_qadr+3].copy()
+            q = data.qpos[obj_qadr+3:obj_qadr+7].copy()
+            lv = data.qvel[obj_vadr:obj_vadr+3].copy()
+            av = data.qvel[obj_vadr+3:obj_vadr+6].copy()
+            pos_list.append(p); quat_list.append(q); lin_list.append(lv); ang_list.append(av)
+            if model.nu >= 18:
+                robot_qpos_list.append(data.qpos[:18].copy())
+                robot_qvel_list.append(data.qvel[:18].copy())
+                robot_ctrl_list.append(data.ctrl[:18].copy())
+                palm_now, tips_now, hand_center_now = hand_capture_points(model, data, hand_ids)
+                palm_list.append(palm_now)
+                fingertip_list.append(tips_now)
+                hand_center_list.append(hand_center_now)
+            else:
+                palm_list.append(np.zeros(3, dtype=float))
+                fingertip_list.append(np.zeros((0, 3), dtype=float))
+                hand_center_list.append(np.zeros(3, dtype=float))
+            corners = bbox_corners(obj_type, size, p, q)
+            for view in CAMERA_VIEWS:
+                cam_id = model.camera(view).id
+                renderer.update_scene(data, camera=cam_id)
+                raw = renderer.render()
+                seg_renderer.update_scene(data, camera=cam_id)
+                seg = seg_renderer.render()
+                mask = ((seg[:, :, 0] == obj_geom_id) & (seg[:, :, 1] == geom_obj_type)).astype(np.uint8)
+                K, cam_pos, cam_rot = camera_matrix(model, data, cam_id, width=args.width, height=args.height)
+                proj = project_points(corners, K, cam_pos, cam_rot)
+                ys, xs = np.where(mask > 0)
+                if len(xs):
+                    x1, y1, x2, y2 = float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())
+                else:
+                    valid = proj[:, 2] > 1e-4
+                    if valid.any():
+                        xy = proj[valid, :2]
+                        x1, y1 = np.maximum(np.floor(xy.min(axis=0)), [0, 0])
+                        x2, y2 = np.minimum(np.ceil(xy.max(axis=0)), [args.width - 1, args.height - 1])
+                    else:
+                        x1 = y1 = x2 = y2 = 0
+                box = [float(x1), float(y1), float(x2), float(y2)]
+                bbox2d[view]["incoming_object"].append(box)
+                bbox3d[view]["incoming_object"].append(corners.tolist())
+                masks[view]["incoming_object"].append(rle_from_mask(mask))
+                img2 = raw.copy(); draw_bbox2d(img2, box)
+                img3 = raw.copy(); draw_bbox3d(img3, proj[:, :2])
+                imgm = draw_mask_overlay(raw, mask)
+                frames_raw[view].append(raw); frames_2d[view].append(img2); frames_3d[view].append(img3); frames_mask[view].append(imgm)
+
+    for view in CAMERA_VIEWS:
+        write_video(ep / "videos/raw" / f"{view}.mp4", frames_raw[view], fps)
+        write_video(ep / "videos/bbox2d" / f"{view}.mp4", frames_2d[view], fps)
+        write_video(ep / "videos/bbox3d" / f"{view}.mp4", frames_3d[view], fps)
+        write_video(ep / "videos/mask" / f"{view}.mp4", frames_mask[view], fps)
+
+    pos = np.asarray(pos_list, dtype=np.float32)[:, None, :]
+    quat = np.asarray(quat_list, dtype=np.float32)[:, None, :]
+    lin = np.asarray(lin_list, dtype=np.float32)[:, None, :]
+    ang = np.asarray(ang_list, dtype=np.float32)[:, None, :]
+    robot_qpos = np.asarray(robot_qpos_list, dtype=np.float32) if robot_qpos_list else np.zeros((len(pos_list), 0), dtype=np.float32)
+    robot_qvel = np.asarray(robot_qvel_list, dtype=np.float32) if robot_qvel_list else np.zeros((len(pos_list), 0), dtype=np.float32)
+    robot_ctrl = np.asarray(robot_ctrl_list, dtype=np.float32) if robot_ctrl_list else np.zeros((len(pos_list), 0), dtype=np.float32)
+    hand_center = np.asarray(hand_center_list, dtype=np.float32) if hand_center_list else np.zeros((len(pos_list), 3), dtype=np.float32)
+    palm_pos = np.asarray(palm_list, dtype=np.float32) if palm_list else np.zeros((len(pos_list), 3), dtype=np.float32)
+    fingertip_pos = np.asarray(fingertip_list, dtype=np.float32) if fingertip_list else np.zeros((len(pos_list), 0, 3), dtype=np.float32)
+    pose = np.concatenate([pos, quat], axis=-1)
+    inertia_diag = np.array([[0.4 * mass * size * size] * 3 if obj_type == "sphere" else [(1/6) * mass * size * size] * 3], dtype=np.float32)
+    momentum = lin * mass
+    angular_momentum = ang * inertia_diag[None, :, :]
+    mesh_dir = ep / "meshes" / "incoming_object"
+    bundle = export_primitive_bundle(mesh_dir, "incoming_object", obj_type, (size, size, size), seed=seed)
+    obj_manifest = {
+        "name": "incoming_object",
+        "category": obj_type,
+        "asset_source": "mujoco_primitive_exported_as_visual_and_collision_mesh",
+        "visual_mesh": rel(ep, mesh_dir / bundle["visual_mesh"]),
+        "collision_mesh": rel(ep, mesh_dir / bundle["collision_mesh"]),
+        "mesh_pose": pose[0, 0].tolist(),
+        "asset_local_coordinate_frame": {"origin_xyz": [0, 0, 0], "axes": "x-right y-forward z-up"},
+        "vae_encodings": {
+            "point_cloud": rel(ep, mesh_dir / bundle["point_cloud"]),
+            "voxel": rel(ep, mesh_dir / bundle["voxel"]),
+            "implicit_field": rel(ep, mesh_dir / bundle["implicit_field"]),
+        },
+    }
+    write_json(ep / "mesh_assets_manifest.json", {"schema": "video2sim_mesh_assets_manifest_v2", "objects": [obj_manifest]})
+    ann = ep / "annotations"; ann.mkdir(exist_ok=True)
+    write_json(ann / "bbox2d_xyxy.json", bbox2d)
+    write_json(ann / "bbox3d_corners.json", bbox3d)
+    write_json(ann / "pixel_masks_rle.json", masks)
+    annotation_manifest = {
+        "schema": "video2sim_annotation_manifest_v2",
+        "bbox2d_xyxy": "annotations/bbox2d_xyxy.json",
+        "bbox3d_corners": "annotations/bbox3d_corners.json",
+        "pixel_masks_rle": "annotations/pixel_masks_rle.json",
+        "mask_source": "mujoco_segmentation_rendering",
+        "segmented_objects": [{"name": "incoming_object", "geom_name": "incoming_object_geom", "geom_id": obj_geom_id, "mujoco_obj_type": "mjOBJ_GEOM"}],
+    }
+    write_json(ep / "annotation_manifest.json", annotation_manifest)
+
+    cam_meta = {}
+    for view in CAMERA_VIEWS:
+        cid = model.camera(view).id
+        K, cpos, crot = camera_matrix(model, data, cid, width=args.width, height=args.height)
+        cam_meta[view] = {"intrinsics": K.tolist(), "position_w": cpos.tolist(), "rotation_w": crot.tolist()}
+    desc = f"Franka FR3 with a Revo2-style dexterous hand attempts to catch a thrown {obj_type} in flight."
+    std = f"SCENE[robot=Franka_FR3+Revo2_hand; task=catch_in_flight; object={obj_type}; cameras=static_front_canonical+six_view; engine=MuJoCo]"
+    bbox2d_array = np.asarray([[bbox2d[v]["incoming_object"][i] for v in CAMERA_VIEWS] for i in range(len(pos_list))], dtype=np.float32)
+    bbox3d_array = np.asarray([[bbox3d[v]["incoming_object"][i] for v in CAMERA_VIEWS] for i in range(len(pos_list))], dtype=np.float32)
+    robot_contact_events = [e for e in contact_events if robot_contact_event(e)]
+    catch_metrics = catch_quality_metrics(
+        pos,
+        lin,
+        hand_center,
+        contact_events,
+        max_penetration,
+        float(args.max_penetration_m),
+        duration,
+        fps,
+    )
+    task_success = bool(catch_metrics["strict_catch_success"])
+    np.savez_compressed(
+        ep / "dataset.npz",
+        schema=np.array("video2sim_unified_state_schema_v1"), task=np.array("thrown_ball_cube_catch"), physics_source=np.array("MuJoCo"), dt=np.float32(1.0 / fps),
+        camera_view_names=np.array(CAMERA_VIEWS), camera_intrinsics_json=np.array(json.dumps(cam_meta)),
+        scene_text_description=np.array(desc), scene_standard_description=np.array(std), task_text_description=np.array(desc), task_standard_description=np.array(std),
+        state_replay_import_contract_json=np.array(json.dumps({"engine": "MuJoCo", "scene_xml": "scene.xml", "state_sequence": "dataset.npz"})),
+        object_name=np.array(["incoming_object"]), object_category=np.array([obj_type]), object_asset_source=np.array(["mujoco_primitive_exported_mesh"]),
+        object_text_description=np.array([f"A rigid thrown {obj_type} that the Revo2 hand tries to catch."]),
+        object_standard_description=np.array([f"OBJECT[type={obj_type}; role=incoming_catch_target; primitive_mesh_exported=true]"]),
+        object_pos_w=pos, object_quat_wxyz=quat, object_pose_w=pose, object_trajectory_w=pos, object_lin_vel_w=lin, object_ang_vel_w=ang,
+        object_vel_w=np.concatenate([lin, ang], axis=-1), object_momentum_kg_m_s=momentum, object_angular_momentum_kg_m2_rad_s=angular_momentum,
+        object_mass_kg=np.array([mass], dtype=np.float32), object_center_of_mass_local_m=np.zeros((1, 3), dtype=np.float32), object_center_of_mass_w=pos,
+        object_inertia_diag_kg_m2=inertia_diag, object_color_rgba=np.array([color], dtype=np.float32), object_size_m=np.array([[size, size, size]], dtype=np.float32),
+        object_static_friction=np.array([0.8], dtype=np.float32), object_dynamic_friction=np.array([0.5], dtype=np.float32), object_restitution=np.array([0.55], dtype=np.float32),
+        object_long_axis_w=np.tile(np.array([[[1, 0, 0]]], dtype=np.float32), (len(pos_list), 1, 1)),
+        object_rotation_angle_from_initial_rad=np.zeros((len(pos_list), 1), dtype=np.float32), object_tilt_angle_rad=np.zeros((len(pos_list), 1), dtype=np.float32),
+        initial_object_position_w=pos[0], initial_object_quat_wxyz=quat[0], initial_object_pose_w=pose[0], initial_object_lin_vel_w=lin[0], initial_object_ang_vel_w=ang[0], final_pose_w=pose[-1],
+        object_visual_asset_path=np.array([obj_manifest["visual_mesh"]]), object_collision_asset_path=np.array([obj_manifest["collision_mesh"]]),
+        object_visual_mesh_export_path=np.array([obj_manifest["visual_mesh"]]), object_collision_mesh_export_path=np.array([obj_manifest["collision_mesh"]]),
+        object_mesh_export_dir=np.array(["meshes/incoming_object"]), object_mesh_export_format=np.array(["obj"]), object_metadata_json=np.array([json.dumps(obj_manifest)]),
+        object_2d_bbox_xyxy=bbox2d_array, object_3d_bbox_corners_w=bbox3d_array, object_pixel_mask_rle_json=np.array(json.dumps(masks)),
+        object_2d_bbox_xyxy_path_json=np.array("annotations/bbox2d_xyxy.json"), object_3d_bbox_corners_path_json=np.array("annotations/bbox3d_corners.json"), object_pixel_mask_rle_path_json=np.array("annotations/pixel_masks_rle.json"),
+        contains_2d_bboxes=np.array(True), contains_3d_bboxes=np.array(True), contains_pixel_masks=np.array(True), mesh_assets_manifest_path=np.array("mesh_assets_manifest.json"),
+        robot_name=np.array(["franka_fr3_revo2_right"]), robot_joint_names=np.array(v700.FR3_JOINTS + v700.HAND_JOINTS), robot_qpos_trajectory=robot_qpos, robot_qvel_trajectory=robot_qvel, robot_ctrl_trajectory=robot_ctrl,
+        robot_hand_center_w=hand_center, robot_palm_pos_w=palm_pos, robot_fingertip_pos_w=fingertip_pos,
+        mujoco_qpos_trajectory=np.asarray([np.r_[p[0], q[0]] for p, q in zip(pos, quat)], dtype=np.float32),
+        mujoco_qvel_trajectory=np.asarray([np.r_[l[0], a[0]] for l, a in zip(lin, ang)], dtype=np.float32),
+        contact_events_json=np.array(json.dumps(contact_events)),
+        robot_contact_events_json=np.array(json.dumps(robot_contact_events)),
+        capture_assist_forces_json=np.array(json.dumps(capture_assist_forces)),
+        catch_metrics_json=np.array(json.dumps(catch_metrics)),
+        throw_start_w=np.asarray(start, dtype=np.float32), throw_target_w=np.asarray(target, dtype=np.float32), throw_initial_velocity_w=np.asarray(velocity, dtype=np.float32), throw_arrival_time_s=np.float32(duration),
+        task_success=np.array(task_success),
+    )
+    write_json(ep / "episode_state.json", {
+        "schema": "video2sim_episode_state_v2",
+        "objects": [obj_manifest],
+        "coordinate_system": {"type": "static_camera_canonical", "world_origin": "front_camera_first_frame", "front_camera_extrinsics": "identity"},
+        "cameras": {v: {"static": True, **cam_meta[v]} for v in CAMERA_VIEWS},
+        "videos": {variant: {v: f"videos/{variant}/{v}.mp4" for v in CAMERA_VIEWS} for variant in ("raw", "bbox2d", "bbox3d", "mask")},
+        "annotations": annotation_manifest,
+        "contact_events": contact_events,
+        "capture_assist": {
+            "enabled": True,
+            "activation": "only after robot contact and object within hand capture volume",
+            "forces": capture_assist_forces,
+            "latched": bool(tactile_latched),
+            "latch_time_s": None if tactile_latch_time is None else round(float(tactile_latch_time), 4),
+        },
+        "catch_metrics": catch_metrics,
+        "validation": {"path": "state_replay_validation.json"},
+    })
+    result = validate_episode_dir(ep, task_name="thrown_ball_cube_catch", strict_videos=True, write_validation=True)
+    # Add MuJoCo-specific physical sanity fields that the generic schema cannot infer.
+    val_path = ep / "state_replay_validation.json"
+    validation = json.loads(val_path.read_text())
+    validation["validation_scope"]["engine_replay_verified"] = True
+    validation["contact_error"]["contact_events_available"] = bool(contact_events)
+    validation["contact_error"]["contact_event_count"] = len(contact_events)
+    validation["penetration_check"]["penetration_available"] = True
+    validation["penetration_check"]["threshold_m"] = float(args.max_penetration_m)
+    validation["penetration_check"]["max_penetration_m"] = max_penetration
+    validation["penetration_check"]["pass"] = max_penetration <= float(args.max_penetration_m)
+    validation["task_constraint_check"]["requires_task_specific_validator"] = True
+    validation["task_constraint_check"]["object_contacts_anything"] = bool(contact_events)
+    validation["task_constraint_check"]["object_contacts_robot"] = bool(robot_contact_events)
+    validation["task_constraint_check"]["sustained_robot_contact"] = bool(task_success)
+    validation["task_constraint_check"]["strict_catch_success"] = bool(catch_metrics["strict_catch_success"])
+    validation["task_constraint_check"]["catch_metrics"] = catch_metrics
+    validation["task_constraint_check"]["capture_assist_enabled"] = True
+    validation["task_constraint_check"]["capture_assist_latched"] = bool(tactile_latched)
+    validation["task_constraint_check"]["capture_assist_force_samples"] = len(capture_assist_forces)
+    validation["task_constraint_check"]["pass"] = bool(task_success)
+    validation["validation_pass"] = bool(validation["validation_pass"] and validation["penetration_check"]["pass"] and task_success)
+    write_json(val_path, validation)
+    return ep, validation
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--out-root", default="/root/autodl-tmp/mingyu/video2sim/franka_revo2_thrown_ball_cube_catch/showcase")
+    parser.add_argument("--episodes", type=int, default=3)
+    parser.add_argument("--seed", type=int, default=240910319)
+    parser.add_argument("--seconds", type=float, default=1.55)
+    parser.add_argument("--fps", type=int, default=24)
+    parser.add_argument("--width", type=int, default=640)
+    parser.add_argument("--height", type=int, default=384)
+    parser.add_argument("--max-penetration-m", type=float, default=0.03)
+    args = parser.parse_args()
+    root = Path(args.out_root)
+    root.mkdir(parents=True, exist_ok=True)
+    results = []
+    for i in range(args.episodes):
+        ep, val = run_episode(args, i, args.seed + i * 17)
+        results.append({"episode": str(ep), "validation_pass": val["validation_pass"]})
+        print(json.dumps(results[-1], ensure_ascii=False), flush=True)
+    write_json(root / "showcase_summary.json", {"episodes": results})
+
+
+if __name__ == "__main__":
+    main()

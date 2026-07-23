@@ -1,0 +1,15 @@
+{
+  "schema": "video2sim_annotation_manifest_v2",
+  "bbox2d_xyxy": "annotations/bbox2d_xyxy.json",
+  "bbox3d_corners": "annotations/bbox3d_corners.json",
+  "pixel_masks_rle": "annotations/pixel_masks_rle.json",
+  "mask_source": "mujoco_segmentation_rendering",
+  "segmented_objects": [
+    {
+      "name": "incoming_object",
+      "geom_name": "incoming_object_geom",
+      "geom_id": 61,
+      "mujoco_obj_type": "mjOBJ_GEOM"
+    }
+  ]
+}

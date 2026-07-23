@@ -1,0 +1,26 @@
+<!doctype html><meta charset="utf-8"><title>browser safe demos</title>
+<style>
+body{font-family:Arial,sans-serif;background:#111;color:#eee;margin:0;padding:18px}h1{font-size:22px}.grid{display:grid;grid-template-columns:repeat(2,minmax(320px,1fr));gap:14px}.card{background:#1b1b1b;border:1px solid #333;border-radius:6px;padding:10px}video{width:100%;background:#000}.note{color:#bbb;margin:10px 0 18px}a{color:#8fd1ff}@media(max-width:760px){.grid{grid-template-columns:1fr}}
+</style>
+<h1>Browser-safe strict grasp demos</h1>
+<div class="note">?????????? H.264 baseline + faststart???????? 0 ????????????????</div>
+<div class="grid" id="grid"></div>
+<script>
+const files=[
+ ['Sample 0 raw front','sample_00_case_0039_postdamp2p8_raw_front.mp4'],
+ ['Sample 0 3D box front','sample_00_case_0039_postdamp2p8_bbox3d_front.mp4'],
+ ['Sample 0 mask front','sample_00_case_0039_postdamp2p8_mask_front.mp4'],
+ ['Sample 0 raw left oblique','sample_00_case_0039_postdamp2p8_raw_left_oblique.mp4'],
+ ['Sample 1 raw front','sample_01_case_0023_postdamp2p8_raw_front.mp4'],
+ ['Sample 1 3D box front','sample_01_case_0023_postdamp2p8_bbox3d_front.mp4'],
+ ['Sample 2 raw front','sample_02_case_0003_postdamp2p8_raw_front.mp4'],
+ ['Sample 2 3D box front','sample_02_case_0003_postdamp2p8_bbox3d_front.mp4'],
+];
+const g=document.getElementById('grid');
+for(const [label,file] of files){
+ const base=file.replace('.mp4','');
+ const div=document.createElement('div'); div.className='card';
+ div.innerHTML=`<b>${label}</b><video controls preload="metadata" muted playsinline poster="posters/${base}.jpg" src="videos/${file}"></video><div><a href="videos/${file}" target="_blank">open mp4</a></div>`;
+ g.appendChild(div);
+}
+</script>

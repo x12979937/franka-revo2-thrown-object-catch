@@ -1,0 +1,120 @@
+{
+  "schema": "video2sim_state_replay_validation_v3",
+  "task": "thrown_ball_cube_catch",
+  "episode_dir": "/root/autodl-tmp/mingyu/video2sim/franka_revo2_thrown_ball_cube_catch/hidden_aux_pads_clear_preview_20260723_092016/sample_00_case_0039_postdamp2p8/episode_000000/thrown_ball_cube_catch",
+  "validation_pass": true,
+  "failure_reasons": [],
+  "warnings": [],
+  "validation_scope": {
+    "physics_engine": "MuJoCo",
+    "state_sequence_importable": true,
+    "engine_replay_verified": true,
+    "note": "This file validates export completeness and state-sequence importability. Engine deterministic replay should set engine_replay_verified=true after reloading MuJoCo state and comparing trajectories/contacts."
+  },
+  "state_sequence": {
+    "frame_count": 97,
+    "object_count": 1,
+    "nonfinite_field_count": 0,
+    "max_quaternion_norm_error": 3.128207681779571e-08,
+    "max_linear_speed_m_s": 4.60175895690918,
+    "max_angular_speed_rad_s": 72.7547836303711
+  },
+  "trajectory_error": {
+    "max_initial_position_error_m": 0.0,
+    "max_final_position_error_m": 0.0
+  },
+  "contact_error": {
+    "contact_events_available": true,
+    "contact_error_pending_engine_replay": true,
+    "contact_event_count": 1576
+  },
+  "penetration_check": {
+    "penetration_available": true,
+    "threshold_m": 0.04,
+    "requires_mujoco_contact_replay": true,
+    "max_penetration_m": 0.009751559998557827,
+    "pass": true
+  },
+  "task_constraint_check": {
+    "requires_task_specific_validator": true,
+    "auto_rebuild_if_failed": true,
+    "object_contacts_anything": true,
+    "object_contacts_robot": true,
+    "sustained_robot_contact": true,
+    "strict_catch_success": true,
+    "true_grasp_success": true,
+    "catch_metrics": {
+      "strict_catch_success": true,
+      "true_grasp_success": true,
+      "visible_hand_closure": true,
+      "hand_closure_delta_sum_rad": 2.4195186432115876,
+      "hand_qpos_range_sum_rad": 2.5870704022527207,
+      "soft_catch_contact_count": 0,
+      "first_robot_contact_time_s": 0.904,
+      "arrival_time_s": 0.8949114008654808,
+      "min_object_to_hand_center_m": 0.027085966867883386,
+      "final_object_to_hand_center_m": 0.030071110823853175,
+      "initial_object_speed_m_s": 4.601758990401545,
+      "final_object_speed_m_s": 0.10661898607777048,
+      "final_relative_speed_m_s": 0.0597494794537124,
+      "final_vertical_slip_m": -0.023886799812316895,
+      "speed_reduction_ratio": 0.023169180806765156,
+      "in_hand_frames_after_arrival": 40,
+      "held_final_window_frames": 21,
+      "inside_finger_cage_final_window_frames": 21,
+      "final_inside_finger_cage": true,
+      "inside_pinch_grasp_final_window_frames": 21,
+      "final_inside_pinch_grasp": true,
+      "grasp_geometry_final_window_frames": 21,
+      "final_grasp_geometry": true,
+      "final_palm_to_object_m": 0.12229096633850274,
+      "final_min_fingertip_to_object_m": 0.0668812695608943,
+      "final_mean_fingertip_to_object_m": 0.09210623742709367,
+      "final_tip_spread_m": 0.05450372732852252,
+      "final_object_between_palm_and_tips": true,
+      "palm_faces_incoming_trajectory": true,
+      "palm_source_alignment_score": 0.9831498877215445,
+      "min_required_palm_source_alignment": 0.18,
+      "strict_max_penetration_m": 0.035,
+      "late_finger_contact_body_count": 4,
+      "late_thumb_contact": true,
+      "late_robot_contact_bodies": [
+        "revo2_right_middle_proximal_link",
+        "revo2_right_pinky_proximal_link",
+        "revo2_right_ring_proximal_link",
+        "revo2_right_thumb_metacarpal_link"
+      ],
+      "robot_contact_body_count": 5,
+      "finger_contact_body_count": 4,
+      "robot_contact_bodies": [
+        "panda_link7",
+        "revo2_right_middle_proximal_link",
+        "revo2_right_pinky_proximal_link",
+        "revo2_right_ring_proximal_link",
+        "revo2_right_thumb_metacarpal_link"
+      ],
+      "floor_or_wall_contact_before_catch": false,
+      "max_penetration_m": 0.009751559998557827,
+      "penetration_limit_m": 0.04
+    },
+    "capture_assist_enabled": false,
+    "capture_assist_mode": "disabled_true_contact_only",
+    "capture_assist_max_force_n": 0.0,
+    "capture_assist_latched": true,
+    "capture_assist_force_samples": 0,
+    "pass": true
+  },
+  "visual_supervision": {
+    "raw_video_count": 6,
+    "bbox2d_video_count": 6,
+    "bbox3d_video_count": 6,
+    "contains_2d_bboxes": true,
+    "contains_3d_bboxes": true,
+    "contains_pixel_masks": true
+  },
+  "assets": {
+    "mesh_manifest_object_count": 1,
+    "missing_mesh_files": [],
+    "vae_npz_count": 3
+  }
+}

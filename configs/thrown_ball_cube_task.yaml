@@ -1,0 +1,65 @@
+project: franka_revo2_thrown_ball_cube_catch
+engine: mujoco
+robot: Franka FR3 with Revo2-style dexterous hand
+reference_task: front110 falling/catching rod-like tool task, especially v699/v730 aerial catching setup and timing logic
+paper_reference:
+  arxiv: 2409.10319
+  title: Catch It! Learning to Catch in Flight with Mobile Dexterous Hands
+active_output_root: /root/autodl-tmp/mingyu/video2sim/franka_revo2_thrown_ball_cube_catch
+compressed_archive_root: /autodl-fs/data/mingyu/video2sim/franka_revo2_thrown_ball_cube_catch
+fs_policy: store source, manifests, compressed archives only; do not place large raw frame/video batches on fs
+tmp_policy: active raw frames/videos/datasets during generation
+objects:
+  - type: sphere
+    role: incoming thrown object
+    randomize: [radius, mass, color, initial_position, initial_velocity, angular_velocity, release_time]
+  - type: cube
+    role: incoming thrown object
+    randomize: [edge_length, mass, color, initial_position, initial_velocity, angular_velocity, release_time]
+trajectory_randomization:
+  incoming_sector_deg: [35, 145]
+  launch_height_m: [0.35, 1.25]
+  target_region: robot_hand_intercept_volume
+  speed_mps: [0.8, 4.0]
+  lateral_offset_m: [-0.45, 0.45]
+  spin_radps: [-20, 20]
+catch_success_criteria:
+  - object_contacts_revo2_hand
+  - object_retained_after_contact_window
+  - object_not_latched_or_teleported
+  - no_severe_penetration
+  - replay_state_error_within_threshold
+
+export_schema_compatibility:
+  required: true
+  reference_family: IsaacLab/IsaacGym video2sim datasets from demo1, demo2, demo3, and arc-rods
+  rule: MuJoCo exports must use the same directory layout, file naming style, metadata structure, state schema conventions, camera schema, box/mask schema, mesh asset bundle schema, replay validation schema, and compressed batch packaging style as the IsaacLab/IsaacGym datasets. Engine-specific fields may be added, but shared fields must remain compatible.
+  state_requirements:
+    - per_object_full_physical_state
+    - position_orientation_velocity_angular_velocity
+    - mass_center_of_mass_inertia_momentum
+    - mesh_pose
+    - 2d_boxes
+    - 3d_boxes
+    - trajectory
+    - contact_events
+    - replayable_engine_state
+  perception_requirements:
+    - raw_rgb_frames_or_video_without_boxes
+    - rgb_frames_or_video_with_2d_and_3d_boxes
+    - pixel_masks_per_object
+    - camera_intrinsics_extrinsics
+    - camera_coordinate_convention_matching_current_video2sim_baseline
+  mesh_requirements:
+    - visual_mesh_files
+    - collision_mesh_files_or_explicit_collision_geometry
+    - voxel_matrix
+    - point_cloud_matrix
+    - implicit_field_sample_matrix
+  validation_requirements:
+    - state_replay_validation_json_per_episode
+    - importable_to_physics_engine
+    - trajectory_error
+    - contact_error
+    - penetration_check
+    - task_constraint_check
